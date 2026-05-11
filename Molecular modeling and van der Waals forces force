@@ -1,0 +1,129 @@
+import pygame
+import math 
+
+pygame.init()
+info = pygame.display.Info()
+width = info.current_w
+height = info.current_h
+font = pygame.font.SysFont("Arial", 36) # Шрифт и размер текста для интерфейса
+screen = pygame.display.set_mode((width, height), pygame.FULLSCREEN) # Размер экрана симуляции
+background = (30, 30, 36) # Серый цвет для заднего фона
+
+# Список возможных атомов в нашей симуляции и её характеристики
+view = [
+{"Number": 1, "Name": "Hydrogen", "Mass": 1, "Color": (255, 255, 255), "Radius": 15},
+{"Number": 2, "Name": "Helium", "Mass": 4, "Color": (217, 255, 255), "Radius": 12},
+{"Number": 3, "Name": "Lithium", "Mass": 7, "Color": (204, 128, 255), "Radius": 22},
+{"Number": 4, "Name": "Carbon", "Mass": 12, "Color": (144, 144, 144), "Radius": 18},
+{"Number": 5, "Name": "Nitrogen", "Mass": 14, "Color": (48, 80, 248), "Radius": 17},
+{"Number": 6, "Name": "Oxygen", "Mass": 16, "Color": (255, 13, 13), "Radius": 16},
+{"Number": 7, "Name": "sodium", "Mass": 23, "Color": (171, 92, 242), "Radius": 28}
+]
+
+
+atoms = [] # Массив, где буду храниться новые атомы при появлении
+index = 0 # Hydrogen
+running = True # Условие для постоянного игрового цикла
+while running:
+    for i in range(len(atoms)):
+        for j in range(i + 1, len(atoms)):
+            a1 = atoms[i]
+            a2 = atoms[j]
+
+            # Считаем расстояние (Теорема Пифагора)
+            dx = a2["x"] - a1["x"]
+            dy = a2["y"] - a1["y"]
+            dist = math.sqrt(dx**2 + dy**2)
+
+            if dist < 1: dist = 1 # Защита от деления на 0
+
+            # Идеальное расстояние для связи (сумма радиусов)
+            r_ideal = a1["radius"] + a2["radius"]
+            
+            # Считаем силу (упрощенный Ван-дер-Ваальс)
+            # Если dist > r_ideal — притягиваем, если < — отталкиваем
+            force = (dist - r_ideal) * 0.001 
+
+            # Применяем силу к скоростям (F = ma => a = F/m)
+            # Раскладываем общую силу на оси X и Y
+            a1["vx"] += force * (dx / dist) / a1["mass"]
+            a1["vy"] += force * (dy / dist) / a1["mass"]
+            a2["vx"] -= force * (dx / dist) / a2["mass"]
+            a2["vy"] -= force * (dy / dist) / a2["mass"]
+
+    screen.fill((background)) # приятный серый цвет заднего фона
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT: # Проверка на нажатие крестика
+            running = False # Игровой цикл заканчивается и всё закрывается
+
+        # Выход на Esc
+        elif event.type == pygame.KEYDOWN: 
+            if event.key == pygame.K_ESCAPE:
+                running = False
+
+        # Интерфейс  
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                mouse_pos = pygame.mouse.get_pos() # Получение координат клика
+                print(f"Выбран: {view[index]['Name']}") # Выбор атома для появления
+                
+                # Создание атома с личными характеристиками
+                new_atom = {
+
+                    "x": float(mouse_pos[0]), 
+                    "y": float(mouse_pos[1]),
+                    "mass": view[index]["Mass"],
+                    "color": view[index]["Color"],
+                    "name": view[index]["Name"],
+                    "radius": view[index]["Radius"],
+                    "vx": 0.0, 
+                    "vy": 0.0
+                }
+
+
+                atoms.append(new_atom)
+
+
+        # Возможность менять атомы на колёсика мышки
+        elif event.type == pygame.MOUSEWHEEL:
+            if event.y > 0: # скролл вверх
+                if index > 0:
+                    index -= 1
+
+
+            elif event.y < 0: # скролл вниз
+                if index < len(view) - 1:
+                    index += 1
+            print(f"Выбран текущий элемент: {view[index]["Name"]}")
+
+
+
+    # Добавление элемента, который был выбрал через колёсико
+    current_element = view[index]
+
+
+    # Интерфейс выбора атома его цвета, массы и названия
+    text_surface = font.render(f"Element: {current_element['Name']} | Mass: {current_element['Mass']}", True, (255, 255, 255))
+    pygame.draw.rect(screen, (0, 0, 0), (10, 10, 450, 50))
+    screen.blit(text_surface, (20,15))
+    pygame.draw.circle(screen, current_element['Color'], (525, 35), 20)
+
+
+
+    for atom in atoms:
+        pygame.draw.circle(screen, atom["color"], (int(atom["x"]), int(atom["y"])), atom["radius"])
+        atom["x"] += atom["vx"]  
+        atom["y"] += atom["vy"]
+
+
+         # Если ударился о левый или правый край
+        if atom["x"] <= atom["radius"] or atom["x"] >= width - atom["radius"]:
+            atom["vx"] *= -1 # Разворот
+
+        # Если ударился о верхний или нижний край
+        if atom["y"] <= atom["radius"] or atom["y"] >= height - atom["radius"]:
+            atom["vy"] *= -1 # Разворот
+
+
+    pygame.display.update()
+pygame.quit()
