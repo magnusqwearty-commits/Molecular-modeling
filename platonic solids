@@ -1,0 +1,198 @@
+import pygame
+import math
+
+
+pygame.init()
+WIDTH, HEIGHT = 1920, 1080
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Hyper-Space Engine: Dimensions 3D to 6D")
+clock = pygame.time.Clock()
+
+font = pygame.font.SysFont("Arial", 24, bold=True)
+current_dimensions = 4
+
+fov = 550.0
+
+def multiply_matrix_vector(matrix, vector):
+    result = []
+    for row in matrix:
+        sum_val = 0.0
+        for i in range(len(vector)):
+            sum_val += row[i] * vector[i]
+        result.append(sum_val)
+    return result
+
+def generate_hypercube(dimensions):
+    vertices = []
+    num_vertices = 2 ** dimensions
+    
+    for i in range(num_vertices):
+        vertex = []
+        for d in range(dimensions):
+            coordinate = 1.0 if (i & (1 << d)) else -1.0
+            vertex.append(coordinate)
+        vertices.append(vertex)
+        
+    edges = []
+    for i in range(num_vertices):
+        for j in range(i + 1, num_vertices):
+            diff = i ^ j
+            if diff and (diff & (diff - 1)) == 0:
+                edges.append((i, j))
+                
+    return vertices, edges
+
+geometry_cache = {d: generate_hypercube(d) for d in range(3, 7)}
+
+def project_nd_to_2d(vertex):
+    global fov
+    current_coords = list(vertex)
+    
+    while len(current_coords) > 2:
+        last_axis = current_coords.pop()
+        distance = last_axis + 4.0
+        
+        for i in range(len(current_coords)):
+            current_coords[i] = (current_coords[i] * fov) / distance
+            
+    screen_x = int(WIDTH / 2 + current_coords[0])
+    screen_y = int(HEIGHT / 2 + current_coords[1])
+    return (screen_x, screen_y)
+
+def build_rotation_matrix(dimensions, angles):
+    mat = [[1.0 if i == j else 0.0 for j in range(dimensions)] for i in range(dimensions)]
+    
+    planes = [(0, 1)]  # XY
+    if dimensions >= 4: planes.append((2, 3))  # ZW
+    if dimensions >= 5: planes.append((0, 4))  # XV
+    if dimensions >= 6: planes.append((1, 5))  # YU
+    
+    for idx, (axis1, axis2) in enumerate(planes):
+        angle = angles[idx % len(angles)]
+        c, s = math.cos(angle), math.sin(angle)
+        
+        rot = [[1.0 if i == j else 0.0 for j in range(dimensions)] for i in range(dimensions)]
+        rot[axis1][axis1] = c
+        rot[axis1][axis2] = -s
+        rot[axis2][axis1] = s
+        rot[axis2][axis2] = c
+        
+        next_mat = [[0.0] * dimensions for _ in range(dimensions)]
+        for i in range(dimensions):
+            for j in range(dimensions):
+                for k in range(dimensions):
+                    next_mat[i][j] += mat[i][k] * rot[k][j]
+        mat = next_mat
+        
+    return mat
+
+buttons = [
+    {"rect": pygame.Rect(30, 40, 150, 40), "dim": 3, "label": "3D Куб", "color": (0, 200, 100)},
+    {"rect": pygame.Rect(30, 100, 150, 40), "dim": 4, "label": "4D Тессеракт", "color": (130, 50, 250)},
+    {"rect": pygame.Rect(30, 160, 150, 40), "dim": 5, "label": "5D Пентеракт", "color": (250, 50, 150)},
+    {"rect": pygame.Rect(30, 220, 150, 40), "dim": 6, "label": "6D Хексеракт", "color": (250, 150, 0)}
+]
+
+def draw_menu():
+    for btn in buttons:
+        is_selected = (btn["dim"] == current_dimensions)
+        bg_color = btn["color"] if is_selected else (40, 40, 50)
+        text_color = (255, 255, 255) if is_selected else (150, 150, 160)
+        
+        pygame.draw.rect(screen, bg_color, btn["rect"], border_radius=5)
+        if not is_selected:
+            pygame.draw.rect(screen, btn["color"], btn["rect"], width=2, border_radius=5)
+            
+        text_surf = font.render(btn["label"], True, text_color)
+        screen.blit(text_surf, (btn["rect"].x + 12, btn["rect"].y + 8))
+
+angles = [0.0, 0.0, 0.0, 0.0]
+dragging = False
+
+running = True
+while running:
+    dt = clock.tick(60) / 1000.0
+    mouse_pos = pygame.mouse.get_pos()
+
+    # ОБРАБОТКА СОБЫТИЙ
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                running = False
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            # Клик колесика вверх (приближение)
+            if event.button == 4:
+                fov = min(1500.0, fov + 40.0)
+            # Клик колесика вниз (отдаление)
+            elif event.button == 5:
+                fov = max(150.0, fov - 40.0)
+                
+            elif event.button == 1:  # Левый клик
+                clicked_menu = False
+                for btn in buttons:
+                    if btn["rect"].collidepoint(mouse_pos):
+                        current_dimensions = btn["dim"]
+                        clicked_menu = True
+                
+                if not clicked_menu:
+                    dragging = True
+                    
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:
+                dragging = False
+                
+        elif event.type == pygame.MOUSEMOTION:
+            if dragging:
+                rel_x, rel_y = event.rel
+                sensitivity = 0.005
+                
+                angles[0] += rel_x * sensitivity
+                angles[1] += rel_y * sensitivity
+                
+                if current_dimensions >= 5:
+                    angles[2] += rel_x * sensitivity * 0.5
+                if current_dimensions >= 6:
+                    angles[3] += rel_y * sensitivity * 0.5
+
+    if not dragging:
+        angles[0] += 0.4 * dt
+        angles[1] += 0.3 * dt
+        angles[2] += 0.2 * dt
+        angles[3] += 0.1 * dt
+
+    screen.fill((12, 12, 20))
+
+    vertices, edges = geometry_cache[current_dimensions]
+    rot_matrix = build_rotation_matrix(current_dimensions, angles)
+
+    projected_points = []
+    for vertex in vertices:
+        transformed = multiply_matrix_vector(rot_matrix, vertex)
+        screen_point = project_nd_to_2d(transformed)
+        projected_points.append(screen_point)
+
+    current_color = next(b["color"] for b in buttons if b["dim"] == current_dimensions)
+
+    for edge in edges:
+        p1 = projected_points[edge[0]]
+        p2 = projected_points[edge[1]]
+        pygame.draw.line(screen, current_color, p1, p2, 1)
+
+    for point in projected_points:
+        pygame.draw.circle(screen, (255, 255, 255), point, 3)
+
+    draw_menu()
+  
+    control_text = "ЛКМ — вращение | Колесико мыши — Зум"
+    control_surf = font.render(control_text, True, (120, 120, 130))
+    screen.blit(control_surf, (210, 85))
+
+    info_text = f"Измерение: {current_dimensions}D | Масштаб (FOV): {int(fov)} | Вершин: {len(vertices)}"
+    info_surf = font.render(info_text, True, (200, 200, 200))
+    screen.blit(info_surf, (210, 48))
+
+    pygame.display.flip()
+
+pygame.quit()
