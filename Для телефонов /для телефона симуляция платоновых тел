@@ -1,0 +1,288 @@
+import pygame
+import math
+import numpy as np
+
+# --- НАСТРОЙКИ СИСТЕМЫ ДЛЯ МОБИЛЬНЫХ УСТРОЙСТВ ---
+pygame.init()
+pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)  # Уменьшено качество для экономии
+INFO = pygame.display.Info()
+WIDTH, HEIGHT = INFO.current_w, INFO.current_h
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN | pygame.SCALED)
+pygame.display.set_caption("Hyper-Space Engine")
+
+clock = pygame.time.Clock()
+font = pygame.font.SysFont("Arial", int(min(WIDTH, HEIGHT) * 0.03), bold=True)
+small_font = pygame.font.SysFont("Arial", int(min(WIDTH, HEIGHT) * 0.02))
+
+current_dimensions = 4
+fov = 400.0
+
+# --- ПРОЦЕДУРНЫЙ ГЕНЕРАТОР ЗВУКА (УПРОЩЁННЫЙ) ---
+def generate_ambient_sound(dimension):
+    sample_rate = 22050
+    duration = 3.0
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    
+    base_freqs = {
+        3: [55.0, 110.0],
+        4: [65.4, 130.8],
+        5: [48.9, 97.9],
+        6: [36.7, 73.4]
+    }.get(dimension, [55.0, 110.0])
+    
+    audio_data = np.zeros((len(t), 2))
+    
+    for i, freq in enumerate(base_freqs):
+        wave = np.sin(2 * np.pi * freq * t)
+        envelope = np.sin(np.pi * t / duration) ** 2
+        audio_data[:, 0] += wave * envelope * (0.2 / (i + 1))
+        audio_data[:, 1] += wave * envelope * (0.2 / (i + 1))
+    
+    audio_data = np.clip(audio_data, -1, 1)
+    audio_int = (audio_data * 32767).astype(np.int16)
+    return pygame.mixer.Sound(buffer=audio_int)
+
+current_track = None
+music_channel = pygame.mixer.Channel(0)
+
+def play_dimension_ambient(dim):
+    global current_track
+    pygame.mixer.stop()
+    current_track = generate_ambient_sound(dim)
+    music_channel.play(current_track, loops=-1, fade_ms=1000)
+
+play_dimension_ambient(current_dimensions)
+
+# --- ЛИНЕЙНАЯ АЛГЕБРА (ОПТИМИЗИРОВАННАЯ) ---
+def multiply_matrix_vector(matrix, vector):
+    result = [0.0] * len(vector)
+    for i, row in enumerate(matrix):
+        s = 0.0
+        for j in range(len(vector)):
+            s += row[j] * vector[j]
+        result[i] = s
+    return result
+
+# --- ГЕНЕРАЦИЯ ГЕОМЕТРИИ (КЕШИРОВАННАЯ) ---
+def generate_hypercube(dimensions):
+    num_vertices = 1 << dimensions
+    vertices = [[1.0 if (i & (1 << d)) else -1.0 for d in range(dimensions)] for i in range(num_vertices)]
+    
+    edges = []
+    for i in range(num_vertices):
+        for j in range(i + 1, num_vertices):
+            diff = i ^ j
+            if diff and (diff & (diff - 1)) == 0:
+                edges.append((i, j))
+    return vertices, edges
+
+geometry_cache = {d: generate_hypercube(d) for d in range(3, 7)}
+
+# --- ПРОЕКЦИЯ (ОПТИМИЗИРОВАННАЯ) ---
+def project_nd_to_2d(vertex):
+    global fov
+    current_coords = list(vertex)
+    
+    while len(current_coords) > 2:
+        last_axis = current_coords.pop()
+        distance = last_axis + 4.0
+        inv_dist = fov / distance
+        for i in range(len(current_coords)):
+            current_coords[i] *= inv_dist
+            
+    return (int(WIDTH / 2 + current_coords[0]), int(HEIGHT / 2 + current_coords[1]))
+
+# --- МАТРИЦА ПОВОРОТА (ОПТИМИЗИРОВАННАЯ) ---
+def build_rotation_matrix(dimensions, angles):
+    mat = [[1.0 if i == j else 0.0 for j in range(dimensions)] for i in range(dimensions)]
+    idx = 0
+    
+    for axis1 in range(dimensions):
+        for axis2 in range(axis1 + 1, dimensions):
+            angle = angles[idx] if idx < len(angles) else 0.0
+            c, s = math.cos(angle), math.sin(angle)
+            
+            # Применяем поворот напрямую к матрице
+            new_mat = [row[:] for row in mat]
+            for i in range(dimensions):
+                new_mat[i][axis1] = mat[i][axis1] * c - mat[i][axis2] * s
+                new_mat[i][axis2] = mat[i][axis1] * s + mat[i][axis2] * c
+            mat = new_mat
+            idx += 1
+            
+    return mat
+
+# --- СЕНСОРНЫЕ КНОПКИ ---
+button_size = int(min(WIDTH, HEIGHT) * 0.08)
+button_spacing = int(button_size * 1.2)
+buttons = []
+
+# Кнопки измерения
+dimensions = [3, 4, 5, 6]
+labels = ["3D", "4D", "5D", "6D"]
+colors = [(0, 200, 100), (130, 50, 250), (250, 50, 150), (250, 150, 0)]
+
+for i, (dim, label, color) in enumerate(zip(dimensions, labels, colors)):
+    x = 10 + i * button_spacing
+    y = HEIGHT - button_size - 10
+    buttons.append({
+        "rect": pygame.Rect(x, y, button_size, button_size),
+        "dim": dim,
+        "label": label,
+        "color": color
+    })
+
+# Кнопка сброса
+reset_button = pygame.Rect(10, 10, button_size, button_size)
+
+# Джойстик для управления
+joystick_center = (int(WIDTH * 0.85), int(HEIGHT * 0.7))
+joystick_radius = int(min(WIDTH, HEIGHT) * 0.12)
+joystick_pos = [0, 0]
+joystick_active = False
+
+# --- ИНИЦИАЛИЗАЦИЯ ---
+angles = [0.0] * 15
+speed = 2.0
+touch_angle = [0.0, 0.0, 0.0]  # X, Y, Z вращение от джойстика
+
+running = True
+while running:
+    dt = clock.tick(60) / 1000.0
+    touch_pos = pygame.mouse.get_pos()
+    
+    # ОБРАБОТКА СОБЫТИЙ
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                running = False
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                # Проверка кнопок измерений
+                for btn in buttons:
+                    if btn["rect"].collidepoint(touch_pos):
+                        if current_dimensions != btn["dim"]:
+                            current_dimensions = btn["dim"]
+                            play_dimension_ambient(current_dimensions)
+                        break
+                
+                # Кнопка сброса
+                if reset_button.collidepoint(touch_pos):
+                    angles = [0.0] * 15
+                    joystick_pos = [0, 0]
+                    touch_angle = [0.0, 0.0, 0.0]
+                
+                # Джойстик
+                dist = math.hypot(touch_pos[0] - joystick_center[0], touch_pos[1] - joystick_center[1])
+                if dist <= joystick_radius * 1.5:
+                    joystick_active = True
+        
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:
+                joystick_active = False
+                joystick_pos = [0, 0]
+                touch_angle = [0.0, 0.0, 0.0]
+        
+        elif event.type == pygame.MOUSEMOTION:
+            if joystick_active:
+                dx = touch_pos[0] - joystick_center[0]
+                dy = touch_pos[1] - joystick_center[1]
+                dist = math.hypot(dx, dy)
+                
+                if dist > 0:
+                    max_dist = joystick_radius
+                    if dist > max_dist:
+                        dx = dx * max_dist / dist
+                        dy = dy * max_dist / dist
+                        dist = max_dist
+                    
+                    joystick_pos = [dx / max_dist, dy / max_dist]
+                    
+                    # Преобразуем в углы
+                    touch_angle[0] = joystick_pos[0] * speed * dt * 2  # X вращение
+                    touch_angle[1] = joystick_pos[1] * speed * dt * 2  # Y вращение
+
+    # ПРИМЕНЯЕМ ВРАЩЕНИЕ
+    if current_dimensions >= 3:
+        angles[0] += touch_angle[0]  # X
+        angles[1] += touch_angle[1]  # Y
+    
+    # Автоматическое вращение для высших измерений
+    if current_dimensions >= 4:
+        angles[3] += 0.3 * dt  # W ось медленно вращается
+    
+    if current_dimensions >= 5:
+        for i in range(4, len(buttons) * 2):
+            if i < len(angles):
+                angles[i] += 0.1 * dt * math.sin(i + pygame.time.get_ticks() * 0.001)
+
+    # ОТРИСОВКА
+    screen.fill((8, 8, 16))
+    
+    # Получаем вершины и рёбра
+    vertices, edges = geometry_cache[current_dimensions]
+    rot_matrix = build_rotation_matrix(current_dimensions, angles)
+    
+    # Проецируем все вершины
+    projected_points = []
+    for vertex in vertices:
+        transformed = multiply_matrix_vector(rot_matrix, vertex)
+        projected_points.append(project_nd_to_2d(transformed))
+    
+    # Рисуем рёбра
+    current_color = colors[dimensions.index(current_dimensions)]
+    for edge in edges:
+        p1 = projected_points[edge[0]]
+        p2 = projected_points[edge[1]]
+        # Оптимизация: рисуем только если точки на экране
+        if (0 <= p1[0] < WIDTH or 0 <= p2[0] < WIDTH) and (0 <= p1[1] < HEIGHT or 0 <= p2[1] < HEIGHT):
+            pygame.draw.line(screen, current_color, p1, p2, max(1, int(min(WIDTH, HEIGHT) * 0.001)))
+    
+    # Вершины (уменьшаем количество для производительности)
+    if current_dimensions <= 4:
+        for point in projected_points:
+            pygame.draw.circle(screen, (200, 200, 255), point, max(2, int(min(WIDTH, HEIGHT) * 0.003)))
+
+    # РИСУЕМ ИНТЕРФЕЙС
+    # Кнопки измерения
+    for btn in buttons:
+        is_selected = (btn["dim"] == current_dimensions)
+        bg_color = btn["color"] if is_selected else (40, 40, 50)
+        
+        pygame.draw.rect(screen, bg_color, btn["rect"], border_radius=int(button_size * 0.15))
+        if not is_selected:
+            pygame.draw.rect(screen, btn["color"], btn["rect"], width=2, border_radius=int(button_size * 0.15))
+        
+        text_surf = font.render(btn["label"], True, (255, 255, 255) if is_selected else (150, 150, 160))
+        text_rect = text_surf.get_rect(center=btn["rect"].center)
+        screen.blit(text_surf, text_rect)
+    
+    # Кнопка сброса
+    pygame.draw.rect(screen, (70, 20, 20), reset_button, border_radius=int(button_size * 0.15))
+    pygame.draw.rect(screen, (220, 50, 50), reset_button, width=2, border_radius=int(button_size * 0.15))
+    reset_surf = font.render("↺", True, (255, 200, 200))
+    reset_rect = reset_surf.get_rect(center=reset_button.center)
+    screen.blit(reset_surf, reset_rect)
+    
+    # Джойстик
+    pygame.draw.circle(screen, (40, 40, 60), joystick_center, joystick_radius, 2)
+    if joystick_active or joystick_pos != [0, 0]:
+        handle_x = joystick_center[0] + joystick_pos[0] * joystick_radius
+        handle_y = joystick_center[1] + joystick_pos[1] * joystick_radius
+        pygame.draw.circle(screen, (100, 100, 150), (int(handle_x), int(handle_y)), int(joystick_radius * 0.4))
+    
+    # Информация
+    info_text = f"{current_dimensions}D | FOV: {int(fov)}"
+    info_surf = small_font.render(info_text, True, (150, 150, 170))
+    screen.blit(info_surf, (reset_button.right + 10, 10))
+    
+    controls_text = "Джойстик: вращение | Кнопки: измерение | ↺: сброс"
+    controls_surf = small_font.render(controls_text, True, (100, 100, 120))
+    controls_rect = controls_surf.get_rect(center=(WIDTH//2, HEIGHT - 10))
+    screen.blit(controls_surf, controls_rect)
+    
+    pygame.display.flip()
+
+pygame.quit()
