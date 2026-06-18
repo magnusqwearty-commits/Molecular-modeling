@@ -1,17 +1,72 @@
 import pygame
 import math
+import numpy as np
 
-
+# --- НАСТРОЙКИ СИСТЕМЫ ---
 pygame.init()
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
 WIDTH, HEIGHT = 1920, 1080
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Hyper-Space Engine: Dimensions 3D to 6D")
+pygame.display.set_caption("Hyper-Space Engine: WASD Keyboard Control")
 clock = pygame.time.Clock()
 
 font = pygame.font.SysFont("Arial", 24, bold=True)
 current_dimensions = 4
-
 fov = 550.0
+
+# --- ПРОЦЕДУРНЫЙ ГЕНЕРАТОР МЯГКОГО КОСМИЧЕСКОГО ГУЛА (6 СЕКУНД) ---
+
+def generate_ambient_sound(dimension):
+    sample_rate = 44100
+    duration = 6.0  
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    
+    base_freqs = {
+        3: [55.0, 110.0, 137.5],      
+        4: [65.4, 130.8, 163.5],      
+        5: [48.9, 97.9, 122.4],       
+        6: [36.7, 73.4, 91.7]         
+    }.get(dimension, [55.0, 110.0, 137.5])
+    
+    audio_data = np.zeros((len(t), 2))
+    
+    for i, freq in enumerate(base_freqs):
+        left_wave = np.sin(2 * np.pi * freq * t)
+        right_wave = np.sin(2 * np.pi * (freq + 0.2) * t)
+        envelope = np.sin(np.pi * t / duration) ** 2
+        
+        audio_data[:, 0] += left_wave * envelope * (0.15 / (i + 1))
+        audio_data[:, 1] += right_wave * envelope * (0.15 / (i + 1))
+        
+    high_freq = np.array(base_freqs) * 3.0 
+    shimmer_env = np.sin(np.pi * t / duration) ** 4
+    
+    shimmer_wave = np.zeros_like(t)
+    for f in high_freq:
+        shimmer_wave += np.sin(2 * np.pi * f * t)
+        
+    shimmer = shimmer_wave * shimmer_env * 0.005
+    
+    audio_data[:, 0] += shimmer
+    audio_data[:, 1] -= shimmer  
+
+    audio_data = np.clip(audio_data, -1, 1)
+    audio_int = (audio_data * 32767).astype(np.int16)
+    
+    return pygame.mixer.Sound(buffer=audio_int)
+
+current_track = None
+music_channel = pygame.mixer.Channel(0)
+
+def play_dimension_ambient(dim):
+    global current_track
+    pygame.mixer.stop()  
+    current_track = generate_ambient_sound(dim)
+    music_channel.play(current_track, loops=-1, fade_ms=2000)
+
+play_dimension_ambient(current_dimensions)
+
+# --- ЛИНЕЙНАЯ АЛГЕБРА: МАТРИЦЫ N x N ---
 
 def multiply_matrix_vector(matrix, vector):
     result = []
@@ -21,6 +76,8 @@ def multiply_matrix_vector(matrix, vector):
             sum_val += row[i] * vector[i]
         result.append(sum_val)
     return result
+
+# --- ГЕНЕРАЦИЯ ГЕОМЕТРИИ ВЫСШИХ ИЗМЕРЕНИЙ ---
 
 def generate_hypercube(dimensions):
     vertices = []
@@ -44,6 +101,8 @@ def generate_hypercube(dimensions):
 
 geometry_cache = {d: generate_hypercube(d) for d in range(3, 7)}
 
+# --- РЕКУРСИВНЫЙ КОНВЕЙЕР ПРОЕКЦИИ N-мерного пространства в 2D ---
+
 def project_nd_to_2d(vertex):
     global fov
     current_coords = list(vertex)
@@ -59,16 +118,23 @@ def project_nd_to_2d(vertex):
     screen_y = int(HEIGHT / 2 + current_coords[1])
     return (screen_x, screen_y)
 
-def build_rotation_matrix(dimensions, angles):
+# --- СПИСОК ПЛОСКОСТЕЙ ВРАЩЕНИЯ ---
+
+def get_all_planes(dimensions):
+    planes = []
+    for i in range(dimensions):
+        for j in range(i + 1, dimensions):
+            planes.append((i, j))
+    return planes
+
+# --- МАТРИЦА ПОВОРОТА ДЛЯ ВСЕХ ОСЕЙ ---
+
+def build_rotation_matrix(dimensions, all_angles):
     mat = [[1.0 if i == j else 0.0 for j in range(dimensions)] for i in range(dimensions)]
-    
-    planes = [(0, 1)]  # XY
-    if dimensions >= 4: planes.append((2, 3))  # ZW
-    if dimensions >= 5: planes.append((0, 4))  # XV
-    if dimensions >= 6: planes.append((1, 5))  # YU
+    planes = get_all_planes(dimensions)
     
     for idx, (axis1, axis2) in enumerate(planes):
-        angle = angles[idx % len(angles)]
+        angle = all_angles[idx]
         c, s = math.cos(angle), math.sin(angle)
         
         rot = [[1.0 if i == j else 0.0 for j in range(dimensions)] for i in range(dimensions)]
@@ -86,12 +152,17 @@ def build_rotation_matrix(dimensions, angles):
         
     return mat
 
+# --- ОТРИСОВКА ИНТЕРФЕЙСА МЕНЮ ---
+
 buttons = [
     {"rect": pygame.Rect(30, 40, 150, 40), "dim": 3, "label": "3D Куб", "color": (0, 200, 100)},
     {"rect": pygame.Rect(30, 100, 150, 40), "dim": 4, "label": "4D Тессеракт", "color": (130, 50, 250)},
     {"rect": pygame.Rect(30, 160, 150, 40), "dim": 5, "label": "5D Пентеракт", "color": (250, 50, 150)},
     {"rect": pygame.Rect(30, 220, 150, 40), "dim": 6, "label": "6D Хексеракт", "color": (250, 150, 0)}
 ]
+
+# Кнопка сброса (вынесена отдельно, так как у неё нет параметра измерения)
+reset_button_rect = pygame.Rect(30, 290, 150, 40)
 
 def draw_menu():
     for btn in buttons:
@@ -105,62 +176,71 @@ def draw_menu():
             
         text_surf = font.render(btn["label"], True, text_color)
         screen.blit(text_surf, (btn["rect"].x + 12, btn["rect"].y + 8))
+        
+    # Отрисовка кнопки сброса углов
+    pygame.draw.rect(screen, (70, 20, 20), reset_button_rect, border_radius=5)
+    pygame.draw.rect(screen, (220, 50, 50), reset_button_rect, width=2, border_radius=5)
+    reset_surf = font.render("🔄 Сброс", True, (255, 200, 200))
+    screen.blit(reset_surf, (reset_button_rect.x + 22, reset_button_rect.y + 8))
 
-angles = [0.0, 0.0, 0.0, 0.0]
-dragging = False
+# --- ИНИЦИАЛИЗАЦИЯ УГЛОВ ---
+angles = [0.0] * 15
+speed = 1.5  # Скорость вращения при удержании клавиш
 
 running = True
 while running:
     dt = clock.tick(60) / 1000.0
     mouse_pos = pygame.mouse.get_pos()
+    active_planes = get_all_planes(current_dimensions)
 
-    # ОБРАБОТКА СОБЫТИЙ
+    # ОБРАБОТКА ИВЕНТОВ
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 running = False
+            # Горячая клавиша на клавиатуре: Пробел или Backspace для быстрого сброса
+            elif event.key == pygame.K_SPACE or event.key == pygame.K_BACKSPACE:
+                angles = [0.0] * 15
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            # Клик колесика вверх (приближение)
             if event.button == 4:
                 fov = min(1500.0, fov + 40.0)
-            # Клик колесика вниз (отдаление)
             elif event.button == 5:
                 fov = max(150.0, fov - 40.0)
-                
-            elif event.button == 1:  # Левый клик
-                clicked_menu = False
+            elif event.button == 1:  
+                # Проверка клика по кнопкам измерений
                 for btn in buttons:
                     if btn["rect"].collidepoint(mouse_pos):
-                        current_dimensions = btn["dim"]
-                        clicked_menu = True
+                        if current_dimensions != btn["dim"]:
+                            current_dimensions = btn["dim"]
+                            play_dimension_ambient(current_dimensions)
                 
-                if not clicked_menu:
-                    dragging = True
-                    
-        elif event.type == pygame.MOUSEBUTTONUP:
-            if event.button == 1:
-                dragging = False
-                
-        elif event.type == pygame.MOUSEMOTION:
-            if dragging:
-                rel_x, rel_y = event.rel
-                sensitivity = 0.005
-                
-                angles[0] += rel_x * sensitivity
-                angles[1] += rel_y * sensitivity
-                
-                if current_dimensions >= 5:
-                    angles[2] += rel_x * sensitivity * 0.5
-                if current_dimensions >= 6:
-                    angles[3] += rel_y * sensitivity * 0.5
+                # Проверка клика по кнопке сброса
+                if reset_button_rect.collidepoint(mouse_pos):
+                    angles = [0.0] * 15
 
-    if not dragging:
-        angles[0] += 0.4 * dt
-        angles[1] += 0.3 * dt
-        angles[2] += 0.2 * dt
-        angles[3] += 0.1 * dt
+    # УПРАВЛЕНИЕ КЛАВИАТУРОЙ (Плавный опрос состояний)
+    keys = pygame.key.get_pressed()
+    
+    # 3D плоскости (доступны всегда)
+    if keys[pygame.K_a]: angles[0] -= speed * dt  # Влево
+    if keys[pygame.K_d]: angles[0] += speed * dt  # Вправо
+    if keys[pygame.K_w]: angles[1] -= speed * dt  # Вверх
+    if keys[pygame.K_s]: angles[1] += speed * dt  # Вниз
+    if keys[pygame.K_q]: angles[2] -= speed * dt  # Скручивание против часовой
+    if keys[pygame.K_e]: angles[2] += speed * dt  # Скручивание по часовой
+
+    # 4D плоскость ZW (для Тессеракта и выше)
+    if current_dimensions >= 4:
+        if keys[pygame.K_r]: angles[3] -= speed * dt  
+        if keys[pygame.K_f]: angles[3] += speed * dt  
+
+    # Для 5D и 6D плавно покачиваем остальные свободные углы, если нажата любая кнопка движения
+    is_moving = any([keys[pygame.K_w], keys[pygame.K_s], keys[pygame.K_a], keys[pygame.K_d]])
+    if is_moving and current_dimensions >= 5:
+        for i in range(4, len(active_planes)):
+            angles[i] += 0.2 * dt * math.sin(i)
 
     screen.fill((12, 12, 20))
 
@@ -184,8 +264,8 @@ while running:
         pygame.draw.circle(screen, (255, 255, 255), point, 3)
 
     draw_menu()
-  
-    control_text = "ЛКМ — вращение | Колесико мыши — Зум"
+    
+    control_text = "WASD (Оси X/Y) | QE (Ось Z) | RF (Гипер-ось W) | Пробел/Клик — Сброс"
     control_surf = font.render(control_text, True, (120, 120, 130))
     screen.blit(control_surf, (210, 85))
 
