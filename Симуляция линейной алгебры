@@ -1,0 +1,214 @@
+import pygame
+import math
+import sys
+
+# --------------------------------------------
+# 1. ЯДРО ЛИНЕЙНОЙ АЛГЕБРЫ (Матрицы и Векторы)
+# --------------------------------------------
+
+class Vector:
+    """Точка на плоскости (x, y)"""
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def apply_matrix(self, matrix):
+        """Умножаем вектор на матрицу (поворот, сдвиг, масштаб)"""
+        # matrix = [[a, b], [c, d]]
+        a, b, c, d = matrix
+        new_x = a * self.x + b * self.y
+        new_y = c * self.x + d * self.y
+        return Vector(new_x, new_y)
+
+# --------------------------------------------
+# 2. НАША ФИГУРА (Домик или стрелка)
+# --------------------------------------------
+
+class Figure:
+    def __init__(self):
+        # Локальные координаты (от -1 до 1 для удобства масштабирования)
+        # Это стрелка, показывающая направление
+        self.points = [
+            Vector(0, -1.2),  # Носик
+            Vector(0.4, -0.4),
+            Vector(0.2, -0.4),
+            Vector(0.2, 1.2),  # Правое крыло
+            Vector(-0.2, 1.2), # Левое крыло
+            Vector(-0.2, -0.4),
+            Vector(-0.4, -0.4),
+            Vector(0, -1.2)    # Замыкаем контур
+        ]
+        self.color = (100, 200, 255)  # Ярко-голубой
+
+    def transform(self, matrix, scale=80, offset=(400, 300)):
+        """Преобразуем фигуру и переводим в пиксели экрана"""
+        transformed = []
+        for p in self.points:
+            # 1. Применяем матрицу
+            new_p = p.apply_matrix(matrix)
+            # 2. Масштабируем (чтобы видеть) и смещаем в центр экрана
+            screen_x = int(new_p.x * scale + offset[0])
+            screen_y = int(-new_p.y * scale + offset[1])  # -Y потому что в pygame Y вниз
+            transformed.append((screen_x, screen_y))
+        return transformed
+
+# --------------------------------------------
+# 3. ПОСТРОЕНИЕ МАТРИЦ ИЗ УГЛОВ
+# --------------------------------------------
+
+def get_rotation_matrix(angle):
+    """Поворот на угол (в радианах)"""
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    # Матрица поворота: [[cos, -sin], [sin, cos]]
+    return [[cos_a, -sin_a], [sin_a, cos_a]]
+
+def get_scale_matrix(sx, sy):
+    """Масштабирование по осям"""
+    return [[sx, 0], [0, sy]]
+
+def get_shear_matrix(sx, sy):
+    """Сдвиг (наклон) — меняет форму"""
+    return [[1, sx], [sy, 1]]
+
+# --------------------------------------------
+# 4. ОТРИСОВКА ИНТЕРФЕЙСА
+# --------------------------------------------
+
+def draw_grid(screen):
+    """Рисуем оси координат"""
+    width, height = 800, 600
+    center_x, center_y = 400, 300
+    
+    # Серая сетка (маленькие клетки)
+    for x in range(0, width, 40):
+        pygame.draw.line(screen, (40, 40, 40), (x, 0), (x, height))
+    for y in range(0, height, 40):
+        pygame.draw.line(screen, (40, 40, 40), (0, y), (width, y))
+    
+    # Ось X (красная)
+    pygame.draw.line(screen, (200, 50, 50), (0, center_y), (width, center_y), 3)
+    # Ось Y (зеленая)
+    pygame.draw.line(screen, (50, 200, 50), (center_x, 0), (center_x, height), 3)
+    
+    # Подписи (маленькие кружки на концах)
+    pygame.draw.circle(screen, (200, 50, 50), (width-10, center_y), 5)
+    pygame.draw.circle(screen, (50, 200, 50), (center_x, 10), 5)
+
+def draw_info(screen, matrix, angle, scale):
+    """Выводим текст с текущими параметрами"""
+    font = pygame.font.Font(None, 24)
+    a, b, c, d = matrix[0][0], matrix[0][1], matrix[1][0], matrix[1][1]
+    
+    texts = [
+        f"Угол: {round(math.degrees(angle))}°",
+        f"Масштаб: {scale[0]:.1f} x {scale[1]:.1f}",
+        f"Матрица: [[{a:.2f}, {b:.2f}], [{c:.2f}, {d:.2f}]]",
+        "Управление: Q/E - поворот | A/D - масштаб X | W/S - масштаб Y",
+        "R - сброс | F/G - сдвиг (наклон)"
+    ]
+    
+    y_pos = 10
+    for text in texts:
+        surf = font.render(text, True, (255, 255, 255))
+        screen.blit(surf, (10, y_pos))
+        y_pos += 25
+
+# --------------------------------------------
+# 5. ГЛАВНЫЙ ЦИКЛ
+# --------------------------------------------
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((800, 600))
+    pygame.display.set_caption("Интерактивная Линейная Алгебра")
+    clock = pygame.time.Clock()
+    
+    # Начальные параметры
+    angle = 0.0
+    scale_x, scale_y = 1.0, 1.0
+    shear_x, shear_y = 0.0, 0.0
+    
+    figure = Figure()
+    
+    running = True
+    while running:
+        # --- Обработка событий ---
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            if event.type == pygame.KEYDOWN:
+                # Повороты (Q/E)
+                if event.key == pygame.K_q:
+                    angle += 0.1
+                if event.key == pygame.K_e:
+                    angle -= 0.1
+                # Масштаб по X (A/D)
+                if event.key == pygame.K_a:
+                    scale_x -= 0.1
+                if event.key == pygame.K_d:
+                    scale_x += 0.1
+                # Масштаб по Y (W/S)
+                if event.key == pygame.K_w:
+                    scale_y += 0.1
+                if event.key == pygame.K_s:
+                    scale_y -= 0.1
+                # Сдвиг (наклон) F/G
+                if event.key == pygame.K_f:
+                    shear_x += 0.1
+                if event.key == pygame.K_g:
+                    shear_x -= 0.1
+                # Сброс (R)
+                if event.key == pygame.K_r:
+                    angle, scale_x, scale_y, shear_x, shear_y = 0.0, 1.0, 1.0, 0.0, 0.0
+        
+        # --- Композиция матриц (Порядок важен!) ---
+        # Сначала масштаб, потом поворот, потом сдвиг
+        # Мы перемножаем их: M = Shear * Rotation * Scale
+        rot = get_rotation_matrix(angle)
+        sc = get_scale_matrix(scale_x, scale_y)
+        sh = get_shear_matrix(shear_x, shear_y)
+        
+        # Умножаем матрицы (вручную для наглядности)
+        # Сначала R * S
+        a = rot[0][0]*sc[0][0] + rot[0][1]*sc[1][0]
+        b = rot[0][0]*sc[0][1] + rot[0][1]*sc[1][1]
+        c = rot[1][0]*sc[0][0] + rot[1][1]*sc[1][0]
+        d = rot[1][0]*sc[0][1] + rot[1][1]*sc[1][1]
+        rs = [[a, b], [c, d]]
+        
+        # Теперь Sh * (R*S)
+        a = sh[0][0]*rs[0][0] + sh[0][1]*rs[1][0]
+        b = sh[0][0]*rs[0][1] + sh[0][1]*rs[1][1]
+        c = sh[1][0]*rs[0][0] + sh[1][1]*rs[1][0]
+        d = sh[1][0]*rs[0][1] + sh[1][1]*rs[1][1]
+        final_matrix = [[a, b], [c, d]]
+        
+        # Преобразуем фигуру
+        transformed_points = figure.transform(final_matrix)
+        
+        # --- Отрисовка ---
+        screen.fill((10, 10, 30))  # Темный фон
+        draw_grid(screen)
+        
+        # Рисуем нашу фигуру (полигон)
+        if len(transformed_points) > 2:
+            pygame.draw.polygon(screen, figure.color, transformed_points, 2)  # Контур
+            pygame.draw.polygon(screen, (50, 150, 200), transformed_points, 0) # Заливка (полупрозрачная)
+        
+        # Рисуем стрелку от центра к носику (чтобы показать направление)
+        if len(transformed_points) > 0:
+            tip = transformed_points[0]
+            center = (400, 300)
+            pygame.draw.line(screen, (255, 255, 100), center, tip, 2)
+        
+        draw_info(screen, final_matrix, angle, (scale_x, scale_y))
+        
+        pygame.display.flip()
+        clock.tick(60)
+    
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
