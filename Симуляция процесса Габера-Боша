@@ -1,0 +1,246 @@
+import sys
+import numpy as np
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                             QHBoxLayout, QSlider, QLabel, QTextEdit, QSplitter)
+from PyQt5.QtCore import Qt
+
+# Импорты для интеграции графиков Matplotlib в PyQt5
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+class ScientificHaberBoschCalculator(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Прецизионный термодинамический комплекс: Процесс Габера-Боша")
+        self.setGeometry(100, 100, 1200, 750)
+        
+        self.R_gas = 8.314462618  # Универсальная газовая постоянная, Дж/(моль·К)
+        self.temperature = 298.15 # Начальная температура (К)
+        self.pressure = 1.0        # Начальное давление (бар)
+        
+        # ОФИЦИАЛЬНЫЕ КОЭФФИЦИЕНТЫ NIST SHOMATE (Диапазон 298.15 K - 1000 K)
+        # Порядок строго по NIST WebBook: [A, B, C, D, E, F, G, H]
+        # H - это энтальпия образования индивидуального газа (кДж/моль)
+        self.nist_data = {
+            'N2':  [26.09200, 8.218801, -1.976141, 0.159966, 0.044434, -7.989239, 221.0200, 0.0],
+            'H2':  [33.06617, -11.36341, 11.43281, -2.772874, -0.158558, -9.980797, 172.7079, 0.0],
+            'NH3': [19.99563, 49.77120, -15.37569, 1.921168, 0.189174, -53.30167, 205.5243, -45.89806]
+        }
+        
+        self.init_ui()
+        self.update_calculations()
+
+    def init_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        main_layout = QHBoxLayout(main_widget)
+        
+        # Сплиттер для удобного разделения экрана (Управление / График)
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # --- ЛЕВАЯ ПАНЕЛЬ: Управление и вывод данных ---
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        
+        title = QLabel("ФИЗИКО-ХИМИЧЕСКИЙ РЕАКТОР СИНТЕЗА АММИАКА")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #50b6ff;")
+        left_layout.addWidget(title)
+        
+        # Блок управления температурой
+        left_layout.addWidget(QLabel("\n🌡️ Температура в реакторе (T):"))
+        self.lbl_temp = QLabel("298.15 K (25.0 °C)")
+        self.lbl_temp.setStyleSheet("font-weight: bold; color: #ff5555;")
+        left_layout.addWidget(self.lbl_temp)
+        self.slider_temp = QSlider(Qt.Horizontal)
+        self.slider_temp.setRange(298, 1000)
+        self.slider_temp.setValue(298)
+        self.slider_temp.valueChanged.connect(self.on_temp_changed)
+        left_layout.addWidget(self.slider_temp)
+        
+        # Блок управления давлением
+        left_layout.addWidget(QLabel("\n🎛️ Давление в реакторе (P):"))
+        self.lbl_press = QLabel("1.0 бар")
+        self.lbl_press.setStyleSheet("font-weight: bold; color: #55ff55;")
+        left_layout.addWidget(self.lbl_press)
+        self.slider_press = QSlider(Qt.Horizontal)
+        self.slider_press.setRange(1, 400)
+        self.slider_press.setValue(1)
+        self.slider_press.valueChanged.connect(self.on_press_changed)
+        left_layout.addWidget(self.slider_press)
+        
+        # Окно строгих результатов расчета
+        left_layout.addWidget(QLabel("\n📊 Физико-химические параметры системы:"))
+        self.txt_results = QTextEdit()
+        self.txt_results.setReadOnly(True)
+        self.txt_results.setStyleSheet(
+            "background-color: #1c1c24; color: #ffaa00; "
+            "font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;"
+        )
+        left_layout.addWidget(self.txt_results)
+        
+        splitter.addWidget(left_panel)
+        
+        # --- ПРАВАЯ ПАНЕЛЬ: Интерактивный график Matplotlib ---
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        
+        self.fig = Figure(figsize=(6, 5), facecolor='#2e2e3a')
+        self.canvas = FigureCanvas(self.fig)
+        self.ax = self.fig.add_subplot(111)
+        
+        right_layout.addWidget(self.canvas)
+        splitter.addWidget(right_panel)
+        
+        main_layout.addWidget(splitter)
+
+    def on_temp_changed(self, val):
+        self.temperature = float(val)
+        self.lbl_temp.setText(f"{self.temperature:.2f} K ({self.temperature - 273.15:.1f} °C)")
+        self.update_calculations()
+
+    def on_press_changed(self, val):
+        self.pressure = float(val)
+        self.lbl_press.setText(f"{self.pressure:.1f} бар")
+        self.update_calculations()
+
+    def _calc_core_nist(self, T_kelvin, gas_name):
+        """Внутренний строгий расчет энтальпии и энтропии по формулам NIST Шомэ"""
+        t = T_kelvin / 1000.0
+        A, B, C, D, E, F, G, H = self.nist_data[gas_name]
+        
+        # Стандартная энтальпия (кДж/моль). Член H строго прибавляется.
+        H_std = A*t + B*(t**2)/2.0 + C*(t**3)/3.0 + D*(t**4)/4.0 - E/t + F + H
+        # Стандартная энтропия (Дж/(моль·К))
+        S_std = A*np.log(t) + B*t + C*(t**2)/2.0 + D*(t**3)/3.0 - E/(2.0 * t**2) + G
+        
+        return H_std, S_std
+
+    def calculate_reaction_at(self, T_kelvin, P_bar):
+        """Расчет dH, dS_real, dG для заданной точки T и P"""
+        H_N2, S_N2 = self._calc_core_nist(T_kelvin, 'N2')
+        H_H2, S_H2 = self._calc_core_nist(T_kelvin, 'H2')
+        H_NH3, S_NH3 = self._calc_core_nist(T_kelvin, 'NH3')
+        
+        dH_rxn = 2 * H_NH3 - H_N2 - 3 * H_H2 # кДж/моль
+        dS_std = 2 * S_NH3 - S_N2 - 3 * S_H2 # Дж/(моль·К)
+        
+        delta_n = -2 # Сжатие системы (2 - 1 - 3)
+        # Реальная энтропия падает с ростом давления
+        dS_real = dS_std - delta_n * self.R_gas * np.log(P_bar / 1.0)
+        
+        dG_rxn = dH_rxn - (T_kelvin * dS_real) / 1000.0 # кДж/моль
+        return dH_rxn, dS_real, dG_rxn
+
+    def update_calculations(self):
+        # 1. Термодинамический расчет точки по NIST
+        dH, dS, dG = self.calculate_reaction_at(self.temperature, self.pressure)
+        
+        # Константа равновесия K_p через стандартную энергию Гиббса при P=1 бар
+        _, dS_std, _ = self.calculate_reaction_at(self.temperature, 1.0)
+        dG_std_j = (dH * 1000.0) - (self.temperature * dS_std)
+        kp = np.exp(-dG_std_j / (self.R_gas * self.temperature))
+        kp_str = f"{kp:.3e}" if kp > 1e4 or kp < 1e-4 else f"{kp:.4f}"
+        
+        # 2. АКАДЕМИЧЕСКИЙ РАЗДЕЛ: КИНЕТИКА VS ТЕРМОДИНАМИКА ДАВЛЕНИЯ
+        temp_celsius = self.temperature - 273.15
+        
+        if temp_celsius < 380.0:
+            # Случай низких температур: связь N≡N не разрывается
+            state_msg = (
+                "❌ РЕАКЦИЯ ЗАБЛОКИРОВАНА КИНЕТИЧЕСКИ!\n"
+                "  Прочная тройная связь N≡N молекулы азота не может быть\n"
+                "  расщеплена (нет энергии активации). Катализатор не активен.\n"
+                "  Скорость прямой реакции равна 0, реального синтеза НЕТ."
+            )
+        elif self.pressure < 100.0:
+            # Технологический и термодинамический тупик по давлению
+            if dG < 0:
+                state_msg = (
+                    "⚠️ НЕДОСТАТОЧНОЕ ДАВЛЕНИЕ ДЛЯ ПРОМЫШЛЕННОСТИ!\n"
+                    "  Хотя математически ΔG < 0, при давлении ниже 100 бар\n"
+                    "  равновесный выход аммиака ничтожно мал. В реальных\n"
+                    "  условиях синтез экономически и технически невозможен."
+                )
+            else:
+                state_msg = (
+                    "🔴 ТЕРМОДИНАМИЧЕСКИЙ ЗАПРЕТ СИНТЕЗА!\n"
+                    "  Катализатор активен, но из-за высокой температуры и\n"
+                    "  низкого давления термодинамическое равновесие полностью\n"
+                    "  смещено влево. Идет интенсивное РАЗЛОЖЕНИЕ аммиака."
+                )
+        else:
+            # Катализатор активен, давление высокое — идеальные промышленные условия
+            if dG < 0:
+                state_msg = (
+                    "🟢 ИДЕТ ПРОМЫШЛЕННЫЙ СИНТЕЗ АММИАКА (NH₃)\n"
+                    "  Температура достаточна для активации промотированного\n"
+                    "  железного катализатора, а высокое давление успешно\n"
+                    "  сдвинуло равновесие системы вправо по Ле Шателье."
+                )
+            else:
+                state_msg = (
+                    "🔴 КРИТИЧЕСКИЙ ПЕРЕГРЕВ РЕАКТОРА!\n"
+                    "  Несмотря на высокое давление, температура слишком велика.\n"
+                    "  Тепловой эффект (ΔH < 0) смещает реакцию назад.\n"
+                    "  Необходимо снизить температуру или ещё сильнее поднять давление."
+                )
+        
+        # Вывод текста параметров на экран
+        self.txt_results.setText(
+            f" [ПАРАМЕТРЫ СРЕДЫ В РЕАКТОРЕ]\n"
+            f"  • Температура: {self.temperature:.2f} K ({temp_celsius:.1f} °C)\n"
+            f"  • Давление:    {self.pressure:.1f} бар\n\n"
+            f" [СТРОГАЯ ТЕРМОДИНАМИКА ПО NIST]\n"
+            f"  • ΔH (Тепловой эффект): {dH:.2f} кДж/моль\n"
+            f"  • ΔS (Реальная энтропия): {dS:.2f} Дж/(моль·К)\n"
+            f"  • Константа равновесия K_p: {kp_str}\n\n"
+            f" 👉 ЭНЕРГИЯ ГИББСА РЕАКЦИИ:\n"
+            f"  💥 ΔG_rxn = {dG:.2f} кДж/моль\n\n"
+            f" [КОМПЛЕКСНЫЙ НАУЧНЫЙ ВЫВОД]:\n"
+            f"  {state_msg}"
+        )
+        
+        # 3. Перерисовка графика
+        self.plot_graph(dG)
+
+    def plot_graph(self, current_dG):
+        self.ax.clear()
+        
+        # Настройка цветовой палитры под темную тему
+        self.ax.set_facecolor('#1e1e24')
+        self.ax.tick_params(colors='white')
+        self.ax.xaxis.label.set_color('white')
+        self.ax.yaxis.label.set_color('white')
+        self.ax.title.set_color('white')
+        
+        # Вектор температур для отрисовки кривой dG(T)
+        t_vector = np.linspace(298.15, 1000.0, 100)
+        dg_vector = []
+        for t_k in t_vector:
+            _, _, dg_val = self.calculate_reaction_at(t_k, self.pressure)
+            dg_vector.append(dg_val)
+        # Линия изменения энергии Гиббса
+        self.ax.plot(t_vector - 273.15, dg_vector, color='#50b6ff', linewidth=2.5, 
+                     label=f'Кривая ΔG(T) при P={self.pressure} бар')
+        
+        # Линия термодинамического нуля (Равновесие)
+        self.ax.axhline(0, color='red', linestyle='--', alpha=0.6, label='ΔG = 0 (Линия равновесия)')
+        
+        # Текущая точка положения реактора
+        self.ax.plot(self.temperature - 273.15, current_dG, marker='o', markersize=10, 
+                     color='#ffaa00', label='Текущее состояние')
+        
+        # Границы графика и сетка
+        self.ax.set_title("Динамика изменения энергии Гиббса", fontsize=11, fontweight='bold')
+        self.ax.set_xlabel("Температура, °C")
+        self.ax.set_ylabel("ΔG реакции, кДж/моль")
+        self.ax.grid(True, color='#444454', linestyle=':')
+        self.ax.legend(facecolor='#2e2e3a', edgecolor='none', labelcolor='white')
+        
+        self.canvas.draw()
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = ScientificHaberBoschCalculator()
+    window.show()
+    sys.exit(app.exec_())
